@@ -1399,15 +1399,19 @@ func (a *App) loadUpstreamFromDB() (upstreamConfig, error) {
 		if decryptErr != nil {
 			return cfg, fmt.Errorf("could not decrypt custom headers")
 		}
+		// An override stored by an older version may name a header the gateway
+		// now manages (e.g. User-Agent). Ignore it rather than failing the whole
+		// upstream config: the identity defaults are authoritative anyway and the
+		// console no longer edits this field, so a stale value must not brick the
+		// gateway or block a corrective PUT.
 		var headers map[string]string
 		if json.Unmarshal([]byte(plain), &headers) != nil {
-			return cfg, fmt.Errorf("stored custom headers are invalid")
+			log.Printf("ignoring unparseable stored upstream custom headers")
+		} else if validated, headerErr := validateCustomHeaders(headers); headerErr != nil {
+			log.Printf("ignoring stored upstream custom headers: %v", headerErr)
+		} else {
+			cfg.CustomHeaders = validated
 		}
-		validated, headerErr := validateCustomHeaders(headers)
-		if headerErr != nil {
-			return cfg, fmt.Errorf("stored custom headers are invalid")
-		}
-		cfg.CustomHeaders = validated
 	}
 	var visionBaseURL, visionModel, encryptedVisionKey string
 	if visionErr := a.db.QueryRow("SELECT value FROM settings WHERE key='upstream_vision_base_url'").Scan(&visionBaseURL); visionErr != nil && !errors.Is(visionErr, sql.ErrNoRows) {

@@ -1169,6 +1169,28 @@ func TestCustomHeaderValidation(t *testing.T) {
 	}
 }
 
+func TestLoadUpstreamIgnoresInvalidStoredCustomHeaders(t *testing.T) {
+	a := testApp(t)
+	enc, err := a.encrypt(`{"User-Agent":"opencode/old/0.0.0/cli","x-opencode-client":"desktop"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec("INSERT OR REPLACE INTO settings(key,value) VALUES('upstream_base_url','https://example.test'),('upstream_api_key',''),('upstream_custom_headers',?)", enc); err != nil {
+		t.Fatal(err)
+	}
+	a.invalidateUpstreamCache()
+	cfg, err := a.loadUpstream()
+	if err != nil {
+		t.Fatalf("loadUpstream failed on invalid stored custom headers: %v", err)
+	}
+	if cfg.BaseURL != "https://example.test" {
+		t.Fatalf("base url not loaded: %q", cfg.BaseURL)
+	}
+	if len(cfg.CustomHeaders) != 0 {
+		t.Fatalf("expected invalid stored custom headers to be ignored, got %v", cfg.CustomHeaders)
+	}
+}
+
 func TestProxyExpiryAndBulkDelete(t *testing.T) {
 	a := testApp(t)
 	p1, err := parseProxy("http://127.0.0.1:3128")
