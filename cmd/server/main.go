@@ -7,7 +7,6 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
@@ -629,14 +628,18 @@ func openCodeBase62Encode(v uint64, width int) string {
 	return string(b)
 }
 
-func openCodeProjectID() (string, error) {
-	// Random SHA1 hex per gateway request: 40 lowercase hex chars.
-	var nonce [32]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return "", err
+func openCodeProjectID(sessionKey string) string {
+	// Bare 40 lowercase hex, hashed exactly like the reference gateway
+	// (hex(sha256("opencode-project\x00"+signal)[:20])). The upstream only
+	// checks the shape, and hashing keeps one conversation pinned to one
+	// project. The client x-opencode-project header is not read; the keyless
+	// probe path (no session) uses a stable default signal.
+	seed := sessionKey
+	if seed == "" {
+		seed = "relaydesk:default-project"
 	}
-	sum := sha1.Sum(nonce[:])
-	return fmt.Sprintf("%x", sum), nil
+	sum := sha256.Sum256([]byte("opencode-project\x00" + seed))
+	return hex.EncodeToString(sum[:20])
 }
 
 func openCodeID(prefix string) (string, error) {
@@ -689,11 +692,7 @@ func opencodeUpstreamIdentity(sessionKey string) (requestID, sessionID, projectI
 	if err != nil {
 		return "", "", "", err
 	}
-	projectID, err = openCodeProjectID()
-	if err != nil {
-		return "", "", "", err
-	}
-	return requestID, canonicalSessionID(sessionKey), projectID, nil
+	return requestID, canonicalSessionID(sessionKey), openCodeProjectID(sessionKey), nil
 }
 
 // canonicalSessionID re-encodes an arbitrary session signal into the canonical

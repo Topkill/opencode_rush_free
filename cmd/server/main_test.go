@@ -66,20 +66,27 @@ func insertUsageAt(t *testing.T, a *App, createdAt time.Time, model, status stri
 	}
 }
 
-func TestOpenCodeProjectIDIsRandomSHA1Hex(t *testing.T) {
-	seen := map[string]struct{}{}
-	for i := 0; i < 50; i++ {
-		id, err := openCodeProjectID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(id) != 40 || strings.Trim(id, "0123456789abcdef") != "" {
-			t.Fatalf("OpenCode project ID %q is not 40 lowercase hex chars", id)
-		}
-		if _, dup := seen[id]; dup {
-			t.Fatalf("OpenCode project ID %q repeated", id)
-		}
-		seen[id] = struct{}{}
+func TestOpenCodeProjectIDMatchesReferenceHash(t *testing.T) {
+	isHex40 := func(id string) bool {
+		return len(id) == 40 && strings.Trim(id, "0123456789abcdef") == ""
+	}
+	first := openCodeProjectID("session-a")
+	if !isHex40(first) {
+		t.Fatalf("OpenCode project ID %q is not 40 lowercase hex chars", first)
+	}
+	if again := openCodeProjectID("session-a"); again != first {
+		t.Fatalf("OpenCode project ID for the same session changed: %q -> %q", first, again)
+	}
+	if other := openCodeProjectID("session-b"); other == first {
+		t.Fatalf("OpenCode project ID collided across sessions: %q", first)
+	}
+	sum := sha256.Sum256([]byte("opencode-project\x00session-a"))
+	want := fmt.Sprintf("%x", sum[:20])
+	if first != want {
+		t.Fatalf("OpenCode project ID %q does not match the reference sha256[:20] hash %q", first, want)
+	}
+	if keyless := openCodeProjectID(""); keyless != openCodeProjectID("") {
+		t.Fatal("keyless OpenCode project ID is not stable")
 	}
 }
 
