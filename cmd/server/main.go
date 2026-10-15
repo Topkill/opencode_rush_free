@@ -275,6 +275,10 @@ var protectedUpstreamHeaders = map[string]struct{}{
 	"trailer":             {},
 	"transfer-encoding":   {},
 	"upgrade":             {},
+	// The OpenCode identity is fixed by the gateway; the free tier
+	// fingerprints it, so these can never be overridden.
+	"user-agent":        {},
+	"x-opencode-client": {},
 }
 
 var blockedDownstreamHeaders = map[string]struct{}{
@@ -1481,11 +1485,9 @@ func validateUpstreamBaseURL(raw string) (string, error) {
 }
 
 func defaultHeaders() map[string]string {
-	headers := make(map[string]string, len(defaultUpstreamHeaders))
-	for name, value := range defaultUpstreamHeaders {
-		headers[name] = value
-	}
-	return headers
+	// The OpenCode identity headers are managed by the gateway and cannot be
+	// overridden, so there are no default custom headers to seed here.
+	return map[string]string{}
 }
 
 func validateCustomHeaders(headers map[string]string) (map[string]string, error) {
@@ -1657,18 +1659,22 @@ func (a *App) refreshModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func applyUpstreamHeaders(req *http.Request, cfg upstreamConfig) {
-	// Match opencode's Fetch client defaults while keeping caller-supplied
-	// provider headers authoritative.
+	// Provider headers are applied first so the OpenCode identity below stays
+	// authoritative: the free tier fingerprints the client, and a stale stored
+	// override (an old User-Agent or X-Opencode-Client) is rejected with 403
+	// FreeTierError.
+	applyCustomHeaders(req, cfg.CustomHeaders)
 	for name, value := range defaultUpstreamHeaders {
-		if req.Header.Get(name) == "" {
-			req.Header.Set(name, value)
-		}
+		req.Header.Set(name, value)
 	}
 	req.Header.Set("Accept", "application/json")
-	applyCustomHeaders(req, cfg.CustomHeaders)
-	if cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	// The 2026-10-14 free-tier gate rejects keyless requests, so fall back to
+	// the anonymous credential the official client sends when no key is set.
+	key := cfg.APIKey
+	if key == "" {
+		key = "public"
 	}
+	req.Header.Set("Authorization", "Bearer "+key)
 }
 
 func (a *App) testUpstream(w http.ResponseWriter, r *http.Request) {

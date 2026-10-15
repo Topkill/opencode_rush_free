@@ -926,6 +926,22 @@ func TestUsageRatesUseRollingSixtySecondWindow(t *testing.T) {
 	}
 }
 
+func TestApplyUpstreamHeadersFallsBackToPublicKey(t *testing.T) {
+	anonymous := httptest.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
+	applyUpstreamHeaders(anonymous, upstreamConfig{})
+	if got := anonymous.Header.Get("Authorization"); got != "Bearer public" {
+		t.Fatalf("anonymous Authorization = %q, want Bearer public", got)
+	}
+	if got := anonymous.Header.Get("User-Agent"); got != "opencode/latest/2.0.29/cli" {
+		t.Fatalf("User-Agent = %q", got)
+	}
+	keyed := httptest.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
+	applyUpstreamHeaders(keyed, upstreamConfig{APIKey: "sk-real"})
+	if got := keyed.Header.Get("Authorization"); got != "Bearer sk-real" {
+		t.Fatalf("configured Authorization = %q", got)
+	}
+}
+
 func TestCustomUpstreamHeadersReachModelsAndChat(t *testing.T) {
 	a := testApp(t)
 	modelHeadersCh := make(chan http.Header, 1)
@@ -953,9 +969,7 @@ func TestCustomUpstreamHeadersReachModelsAndChat(t *testing.T) {
 		"vision_api_key":  "vision-secret",
 		"vision_model":    "vision-model",
 		"custom_headers": map[string]string{
-			"User-Agent":        "opencode/1.18.12 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13",
-			"x-opencode-client": "cli",
-			"X-Relay-Test":      "enabled",
+			"X-Relay-Test": "enabled",
 		},
 	})
 	put := httptest.NewRecorder()
@@ -970,8 +984,8 @@ func TestCustomUpstreamHeadersReachModelsAndChat(t *testing.T) {
 		t.Fatalf("model refresh failed: %d body=%s", refresh.Code, refresh.Body.String())
 	}
 	modelHeaders := <-modelHeadersCh
-	if modelHeaders.Get("User-Agent") != "opencode/1.18.12 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13" || modelHeaders.Get("X-Opencode-Client") != "cli" || modelHeaders.Get("X-Relay-Test") != "enabled" {
-		t.Fatalf("custom model headers were not forwarded: %#v", modelHeaders)
+	if modelHeaders.Get("User-Agent") != "opencode/latest/2.0.29/cli" || modelHeaders.Get("X-Opencode-Client") != "cli" || modelHeaders.Get("X-Relay-Test") != "enabled" {
+		t.Fatalf("custom model headers were not forwarded or identity was not authoritative: %#v", modelHeaders)
 	}
 	if modelHeaders.Get("Authorization") != "Bearer up-secret" {
 		t.Fatalf("upstream authorization was not injected: %#v", modelHeaders)
@@ -992,8 +1006,8 @@ func TestCustomUpstreamHeadersReachModelsAndChat(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	chatHeaders := <-chatHeadersCh
-	if chatHeaders.Get("User-Agent") != "opencode/1.18.12 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13" || chatHeaders.Get("X-Opencode-Client") != "cli" || chatHeaders.Get("X-Relay-Test") != "enabled" {
-		t.Fatalf("custom chat headers were not forwarded: %#v", chatHeaders)
+	if chatHeaders.Get("User-Agent") != "opencode/latest/2.0.29/cli" || chatHeaders.Get("X-Opencode-Client") != "cli" || chatHeaders.Get("X-Relay-Test") != "enabled" {
+		t.Fatalf("custom chat headers were not forwarded or identity was not authoritative: %#v", chatHeaders)
 	}
 	if chatHeaders.Get("Authorization") != "Bearer up-secret" || chatHeaders.Get("Content-Type") != "application/json" {
 		t.Fatalf("gateway-managed headers were not injected: %#v", chatHeaders)
@@ -1133,6 +1147,12 @@ func TestVisionDirectRequestDoesNotPenalizeChatProxy(t *testing.T) {
 func TestCustomHeaderValidation(t *testing.T) {
 	if _, err := validateCustomHeaders(map[string]string{"Authorization": "Bearer override"}); err == nil {
 		t.Fatal("authorization override was accepted")
+	}
+	if _, err := validateCustomHeaders(map[string]string{"User-Agent": "override"}); err == nil {
+		t.Fatal("user-agent override was accepted")
+	}
+	if _, err := validateCustomHeaders(map[string]string{"x-opencode-client": "desktop"}); err == nil {
+		t.Fatal("x-opencode-client override was accepted")
 	}
 	if _, err := validateCustomHeaders(map[string]string{"X-Test\r\nInjected": "value"}); err == nil {
 		t.Fatal("invalid header name was accepted")

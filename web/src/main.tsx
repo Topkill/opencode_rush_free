@@ -276,25 +276,6 @@ const publicApi = async (path: string) => {
   return data;
 };
 const fmt = (n: number) => new Intl.NumberFormat("zh-CN").format(n || 0);
-const headersToText = (headers?: Record<string, string>) =>
-  Object.entries(headers || {})
-    .map(([name, value]) => `${name}: ${value}`)
-    .join("\n");
-const parseHeaderText = (text: string) => {
-  const headers: Record<string, string> = {};
-  for (const [index, raw] of text.split(/\r?\n/).entries()) {
-    const line = raw.trim();
-    if (!line) continue;
-    const separator = line.indexOf(":");
-    if (separator < 1)
-      throw new Error(`第 ${index + 1} 行必须使用 Header-Name: value 格式`);
-    const name = line.slice(0, separator).trim();
-    const value = line.slice(separator + 1).trim();
-    if (!name) throw new Error(`第 ${index + 1} 行缺少请求头名称`);
-    headers[name] = value;
-  }
-  return headers;
-};
 
 function Login({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState("");
@@ -1926,9 +1907,6 @@ function Models({
   const [visionUseProxy, setVisionUseProxy] = useState(
     upstream.vision_use_proxy !== false,
   );
-  const [headers, setHeaders] = useState(() =>
-    headersToText(upstream.custom_headers),
-  );
   const [clientKey, setClientKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
@@ -1937,22 +1915,13 @@ function Models({
     setVisionBase(upstream.vision_base_url || "");
     setVisionModel(upstream.vision_model || "");
     setVisionUseProxy(upstream.vision_use_proxy !== false);
-    setHeaders(headersToText(upstream.custom_headers));
   }, [
     upstream.base_url,
-    upstream.custom_headers,
     upstream.vision_base_url,
     upstream.vision_model,
     upstream.vision_use_proxy,
   ]);
   const save = async () => {
-    let customHeaders: Record<string, string>;
-    try {
-      customHeaders = parseHeaderText(headers);
-    } catch (e) {
-      notify((e as Error).message, "error");
-      return;
-    }
     setBusy(true);
     try {
       await api("/api/settings/upstream", {
@@ -1964,7 +1933,7 @@ function Models({
           vision_api_key: visionKey,
           vision_model: visionModel,
           vision_use_proxy: visionUseProxy,
-          custom_headers: customHeaders,
+          custom_headers: {},
         }),
       });
       notify("上游配置已保存");
@@ -2088,22 +2057,6 @@ function Models({
               Bearer 前缀的值也会自动处理。
             </small>
           </label>
-          <label>
-            自定义请求头
-            <textarea
-              className="headers-input"
-              value={headers}
-              onChange={(e) => setHeaders(e.target.value)}
-              spellCheck={false}
-              placeholder={
-                "User-Agent: opencode/1.18.12 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13\nx-opencode-client: cli"
-              }
-            />
-          </label>
-          <p className="muted header-note">
-            每行一个 <code>Header-Name: value</code>
-            。模型刷新和聊天请求都会使用这些值。
-          </p>
           <div className="config-actions">
             <button className="secondary" onClick={save} disabled={busy}>
               保存配置
