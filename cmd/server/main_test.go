@@ -138,6 +138,84 @@ func TestOpenCodeIDIsTimeOrderedFixedLength(t *testing.T) {
 	}
 }
 
+func TestCanonicalSessionIDMatchesFreeTierShape(t *testing.T) {
+	isHex := func(s string) bool {
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+				return false
+			}
+		}
+		return len(s) > 0
+	}
+	isBase62 := func(s string) bool {
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if !(c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z') {
+				return false
+			}
+		}
+		return len(s) > 0
+	}
+	for _, signal := range []string{"", "ses_abc", "conversation-1", "conversation-1"} {
+		id := canonicalSessionID(signal)
+		if !strings.HasPrefix(id, "ses_") || len(id) != 4+12+14 {
+			t.Fatalf("session %q (from %q) has wrong length", id, signal)
+		}
+		timePart, randomPart := id[4:16], id[16:]
+		if !isHex(timePart) || timePart[9] != 'f' || timePart[10] < 'c' || timePart[10] > 'f' || !isBase62(randomPart) {
+			t.Fatalf("session %q does not match the canonical descending shape", id)
+		}
+	}
+	if canonicalSessionID("a") != canonicalSessionID("a") {
+		t.Fatal("canonicalSessionID is not stable for the same signal")
+	}
+	if canonicalSessionID("a") == canonicalSessionID("b") {
+		t.Fatal("canonicalSessionID collides for different signals")
+	}
+	if canonicalSessionID("") == canonicalSessionID("") {
+		t.Fatal("empty-signal sessions must be random")
+	}
+}
+
+func TestShapeFreeModelBodyInjectsGenuineAgentTools(t *testing.T) {
+	body := []byte(`{"model":"x","messages":[],"tools":[{"type":"function","function":{"name":"edit","description":"stub","parameters":{"type":"object"}}}]}`)
+	shaped, changed := shapeFreeModelBody(body)
+	if !changed {
+		t.Fatal("body was not shaped")
+	}
+	var payload struct {
+		Stream bool `json:"stream"`
+		Tools  []struct {
+			Function struct {
+				Name        string         `json:"name"`
+				Description string         `json:"description"`
+				Parameters  map[string]any `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(shaped, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Stream {
+		t.Fatal("stream was not forced on")
+	}
+	descriptions := map[string]string{}
+	parameterCounts := map[string]int{}
+	for _, tool := range payload.Tools {
+		descriptions[tool.Function.Name] = tool.Function.Description
+		parameterCounts[tool.Function.Name] = len(tool.Function.Parameters)
+	}
+	for _, name := range []string{"shell", "read"} {
+		if _, ok := descriptions[name]; !ok {
+			t.Fatalf("core tool %q was not injected: %#v", name, descriptions)
+		}
+	}
+	if descriptions["edit"] == "stub" || parameterCounts["edit"] == 0 {
+		t.Fatalf("client edit stub was not replaced with the genuine definition: %#v", descriptions["edit"])
+	}
+}
+
 func TestMigrateAddsNullableUsageColumnsToExistingUsageTable(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:legacy-usage-migration?mode=memory&cache=shared")
 	if err != nil {
@@ -923,7 +1001,7 @@ func TestCustomUpstreamHeadersReachModelsAndChat(t *testing.T) {
 	if chatHeaders.Get("Accept") != "*/*" {
 		t.Fatalf("non-stream Accept header = %q", chatHeaders.Get("Accept"))
 	}
-	if chatHeaders.Get("X-Opencode-Project") != "da39a3ee5e6b4b0d3255bfef95601890afd80709" || !strings.HasPrefix(chatHeaders.Get("X-Opencode-Request"), "msg_") || !strings.HasPrefix(chatHeaders.Get("X-Opencode-Session"), "ses_") {
+	if chatHeaders.Get("X-Opencode-Project") != "da39a3ee5e6b4b0d3255bfef95601890afd80709" || chatHeaders.Get("X-Opencode-Session") != "ses_test" || chatHeaders.Get("X-Opencode-Session-Id") != "ses_test" || chatHeaders.Get("X-Opencode-Request") != "" {
 		t.Fatalf("OpenCode identity headers were not injected: %#v", chatHeaders)
 	}
 	resp, err = a.forward(chatRequest, []byte(`{"model":"alpha:free","messages":[],"stream":true}`), cfg, ProxyRecord{URI: upstream.URL}, "msg_stream", "ses_test", "da39a3ee5e6b4b0d3255bfef95601890afd80709", true)

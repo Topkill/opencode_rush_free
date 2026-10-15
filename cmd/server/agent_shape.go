@@ -3,18 +3,54 @@ package main
 import (
 	"bufio"
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 )
 
 // agentCoreTools are the tool names the Zen free tier expects on an
-// agent-shaped request. Requests without them, or with streaming disabled,
-// are rejected with 403 FreeTierError. Only the names matter; minimal
-// definitions are synthesized for whichever ones the client did not declare.
-var agentCoreTools = []string{"bash", "edit", "glob", "grep", "read"}
+// agent-shaped request. Requests without a shell tool and a read tool are
+// rejected with 403 FreeTierError. Since 2026-10-14 name presence is not
+// enough: the upstream compares each recognised tool's description and
+// parameter schema against the official CLI's definitions, so minimal stubs
+// are rejected too. The definitions below are the genuine ones. "shell" is
+// the OpenCode 2.x name; the pre-2.x "bash" spelling is deliberately not
+// injected because the free tier validates the definition of every tool it
+// recognises.
+var agentCoreTools = []string{"shell", "edit", "glob", "grep", "read"}
+
+// opencodeToolsJSON holds the genuine OpenCode tool definitions (description
+// and JSON schema) captured from the official client.
+//
+//go:embed opencode_tools.json
+var opencodeToolsJSON []byte
+
+type agentToolDefinition struct {
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+var (
+	agentToolsOnce sync.Once
+	agentTools     map[string]agentToolDefinition
+)
+
+// knownAgentTool returns the genuine definition for an OpenCode tool name.
+func knownAgentTool(name string) (agentToolDefinition, bool) {
+	agentToolsOnce.Do(func() {
+		definitions := map[string]agentToolDefinition{}
+		if err := json.Unmarshal(opencodeToolsJSON, &definitions); err != nil {
+			definitions = map[string]agentToolDefinition{}
+		}
+		agentTools = definitions
+	})
+	definition, ok := agentTools[name]
+	return definition, ok
+}
 
 // shapeFreeModelBody returns a copy of body normalized for the free tier:
 // streaming enabled plus the core agent tools present, with token usage kept
@@ -64,9 +100,11 @@ func forceIncludeUsage(payload map[string]any) bool {
 	return true
 }
 
-// forceAgentTools appends minimal definitions for any missing core tool so
-// the request reads as an agent session upstream. Tools the client already
-// declared are left untouched.
+// forceAgentTools makes the tool list read as an agent session: every
+// recognised OpenCode tool carries its genuine definition, and the missing
+// core tools are appended. Tools whose names upstream does not recognise are
+// left exactly as the client declared them, so downstream function calling
+// keeps working.
 func forceAgentTools(payload map[string]any) bool {
 	raw, exists := payload["tools"]
 	if !exists {
@@ -77,10 +115,20 @@ func forceAgentTools(payload map[string]any) bool {
 	if !ok {
 		return false
 	}
+	changed := false
 	present := make(map[string]bool, len(items))
-	for _, item := range items {
-		if name := agentToolName(item); name != "" {
-			present[name] = true
+	for index, item := range items {
+		name := agentToolName(item)
+		if name == "" {
+			continue
+		}
+		present[name] = true
+		// A declared definition for a recognised tool name is replaced with the
+		// genuine one: the free tier rejects a stub, and a client that happens
+		// to use the same name with its own schema would otherwise fail.
+		if _, known := knownAgentTool(name); known {
+			items[index] = agentTool(name)
+			changed = true
 		}
 	}
 	missing := make([]string, 0, len(agentCoreTools))
@@ -89,10 +137,14 @@ func forceAgentTools(payload map[string]any) bool {
 			missing = append(missing, name)
 		}
 	}
-	if len(missing) == 0 {
+	if len(missing) > 0 {
+		items = append(items, agentToolset(missing)...)
+		changed = true
+	}
+	if !changed {
 		return false
 	}
-	payload["tools"] = append(items, agentToolset(missing)...)
+	payload["tools"] = items
 	return true
 }
 
@@ -115,16 +167,30 @@ func agentToolset(names []string) []any {
 	}
 	tools := make([]any, 0, len(names))
 	for _, name := range names {
-		tools = append(tools, map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":        name,
-				"description": "Agent tool " + name,
-				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
-			},
-		})
+		tools = append(tools, agentTool(name))
 	}
 	return tools
+}
+
+// agentTool renders one core tool in the Chat shape, using the genuine OpenCode
+// definition whenever one is known.
+func agentTool(name string) map[string]any {
+	description := "Agent tool " + name
+	parameters := map[string]any{"type": "object", "properties": map[string]any{}}
+	if definition, ok := knownAgentTool(name); ok {
+		description = definition.Description
+		if definition.Parameters != nil {
+			parameters = definition.Parameters
+		}
+	}
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        name,
+			"description": description,
+			"parameters":  parameters,
+		},
+	}
 }
 
 // collapseChatCompletionStream drains an OpenAI-compatible Chat SSE response

@@ -12,11 +12,13 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -256,7 +258,7 @@ func parseChatEnvelope(body []byte) (chatEnvelope, map[string]any, error) {
 }
 
 var defaultUpstreamHeaders = map[string]string{
-	"User-Agent":        "opencode/1.18.12 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13",
+	"User-Agent":        "opencode/latest/2.0.29/cli",
 	"X-Opencode-Client": "cli",
 }
 
@@ -676,7 +678,8 @@ func openCodeID(prefix string) (string, error) {
 // opencodeUpstreamIdentity builds the OpenCode identity triple the upstream
 // expects on a chat completion. sessionKey is the client-derived session key
 // when available; empty means no client session, in which case a random
-// session ID is generated (the upstream probe path).
+// signal is used (the upstream probe path). The session id is re-encoded into
+// the canonical "ses_<12hex><14base62>" shape the free tier validates.
 func opencodeUpstreamIdentity(sessionKey string) (requestID, sessionID, projectID string, err error) {
 	requestID, err = openCodeID("msg")
 	if err != nil {
@@ -686,14 +689,50 @@ func opencodeUpstreamIdentity(sessionKey string) (requestID, sessionID, projectI
 	if err != nil {
 		return "", "", "", err
 	}
-	if sessionKey == "" {
-		sessionID, err = openCodeID("ses")
-		if err != nil {
-			return "", "", "", err
+	return requestID, canonicalSessionID(sessionKey), projectID, nil
+}
+
+// canonicalSessionID re-encodes an arbitrary session signal into the canonical
+// OpenCode session shape the upstream free tier validates: "ses_" + 12
+// lowercase hex (a descending 48-bit time part) + 14 base62 chars.
+func canonicalSessionID(signal string) string {
+	if signal == "" {
+		var seed [16]byte
+		if _, err := rand.Read(seed[:]); err != nil {
+			return "ses_" + hex.EncodeToString(make([]byte, 6)) + openCodeBase62Encode(0, 14)
 		}
-		return requestID, sessionID, projectID, nil
+		signal = hex.EncodeToString(seed[:])
 	}
-	return requestID, "ses_" + sessionKey, projectID, nil
+	sum := sha256.Sum256([]byte("ses\x00" + signal))
+	return "ses_" + descendingTimePart(sum[:6]) + base62Fixed(new(big.Int).SetBytes(sum[6:16]), 14)
+}
+
+// descendingTimePart renders six hash bytes as the official client's
+// Identifier.descending() layout: an inverted 48-bit word whose low 12 bits
+// read ffe, as the free tier's encoding check requires.
+func descendingTimePart(hash []byte) string {
+	current := (uint64(hash[0])<<28 | uint64(hash[1])<<20 | uint64(hash[2])<<12 |
+		uint64(hash[3])<<4 | uint64(hash[4])>>4) << 12
+	current |= 1
+	inverted := ^current & 0xFFFFFFFFFFFF
+	out := []byte{
+		byte(inverted >> 40), byte(inverted >> 32), byte(inverted >> 24),
+		byte(inverted >> 16), byte(inverted >> 8), byte(inverted),
+	}
+	return hex.EncodeToString(out)
+}
+
+// base62Fixed renders n as a fixed-width base62 string using the OpenCode
+// alphabet.
+func base62Fixed(n *big.Int, width int) string {
+	base := big.NewInt(62)
+	out := make([]byte, width)
+	remainder := new(big.Int)
+	for i := width - 1; i >= 0; i-- {
+		n.DivMod(n, base, remainder)
+		out[i] = openCodeBase62Alphabet[remainder.Int64()]
+	}
+	return string(out)
 }
 
 func hashToken(s string) string {
@@ -2366,13 +2405,18 @@ func (a *App) forward(r *http.Request, body []byte, cfg upstreamConfig, p ProxyR
 		return nil, err
 	}
 	applyUpstreamHeaders(req, cfg)
-	if requestID != "" {
-		if projectID == "" {
-			projectID = "global"
-		}
-		req.Header.Set("X-Opencode-Project", projectID)
-		req.Header.Set("X-Opencode-Request", requestID)
-		req.Header.Set("X-Opencode-Session", sessionID)
+	if projectID == "" {
+		projectID = "global"
+	}
+	req.Header.Set("x-opencode-project", projectID)
+	// The free tier requires both session headers to carry the same
+	// descending-encoded id, and rejects the gateway's own X-Opencode-Request
+	// header, so requestID is kept for local tracing only.
+	if sessionID != "" {
+		req.Header.Set("x-opencode-session", sessionID)
+		req.Header.Set("x-opencode-session-id", sessionID)
+		req.Header.Set("x-session-affinity", sessionID)
+		req.Header.Set("X-Session-Id", sessionID)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if stream {
