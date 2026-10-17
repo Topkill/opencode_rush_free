@@ -1936,7 +1936,7 @@ func usageClientUserAgent(r *http.Request) string {
 	return strings.TrimSpace(r.UserAgent())
 }
 
-func sessionKey(r *http.Request, user json.RawMessage) string {
+func sessionKey(r *http.Request, user json.RawMessage, messages []any) string {
 	sessionID := ""
 	for _, header := range []string{"X-Relay-Session-ID", "X-OpenCode-Session-ID", "X-Session-ID"} {
 		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
@@ -1949,10 +1949,41 @@ func sessionKey(r *http.Request, user json.RawMessage) string {
 		sessionID = strings.TrimSpace(sessionID)
 	}
 	if sessionID == "" {
+		// No client session signal: derive a stable one from the first user turn
+		// so every turn of the same conversation shares one upstream session
+		// (prompt-cache affinity) instead of a fresh random id per request.
+		sessionID = conversationSeed(messages)
+	}
+	if sessionID == "" {
 		return ""
 	}
 	clientID := hashToken(clientCredential(r))
 	return hashToken(clientID + "\x00" + sessionID)
+}
+
+// conversationSeed returns a stable seed for a conversation from the first
+// user message content. It stays constant as the message history grows across
+// a multi-turn exchange, unlike the per-request content that follows it.
+func conversationSeed(messages []any) string {
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := message["role"].(string); role != "user" {
+			continue
+		}
+		content, present := message["content"]
+		if !present || content == nil {
+			continue
+		}
+		encoded, err := json.Marshal(content)
+		if err != nil || string(encoded) == "null" {
+			continue
+		}
+		return string(encoded)
+	}
+	return ""
 }
 
 func (a *App) gatewayChat(w http.ResponseWriter, r *http.Request) {
@@ -2057,7 +2088,7 @@ func (a *App) gatewayChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	requestSessionKey := sessionKey(r, parsed.User)
+	requestSessionKey := sessionKey(r, parsed.User, parsed.Messages)
 	requestID, upstreamSessionID, projectID, err := opencodeUpstreamIdentity(requestSessionKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not initialize upstream request identity"})

@@ -1191,6 +1191,37 @@ func TestLoadUpstreamIgnoresInvalidStoredCustomHeaders(t *testing.T) {
 	}
 }
 
+func TestSessionKeyDerivesStableSeedFromFirstUserMessage(t *testing.T) {
+	parse := func(body string) chatEnvelope {
+		t.Helper()
+		env, _, err := parseChatEnvelope([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return env
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	first := parse(`{"model":"m","messages":[{"role":"user","content":"write quicksort"}]}`)
+	grown := parse(`{"model":"m","messages":[{"role":"user","content":"write quicksort"},{"role":"assistant","content":"ok"},{"role":"user","content":"now python"}]}`)
+	k1 := sessionKey(req, first.User, first.Messages)
+	k2 := sessionKey(req, grown.User, grown.Messages)
+	if k1 == "" {
+		t.Fatal("session key is empty for a headerless request")
+	}
+	if k1 != k2 {
+		t.Fatalf("session key changed across turns of one conversation: %q != %q", k1, k2)
+	}
+	other := parse(`{"model":"m","messages":[{"role":"user","content":"different start"}]}`)
+	if k3 := sessionKey(req, other.User, other.Messages); k3 == k1 {
+		t.Fatalf("different conversations share a session key: %q", k1)
+	}
+	hdrReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	hdrReq.Header.Set("X-Session-ID", "client-session")
+	if got := sessionKey(hdrReq, first.User, first.Messages); got == k1 {
+		t.Fatal("client session header was ignored")
+	}
+}
+
 func TestProxyExpiryAndBulkDelete(t *testing.T) {
 	a := testApp(t)
 	p1, err := parseProxy("http://127.0.0.1:3128")
@@ -1546,17 +1577,17 @@ func TestSessionKeyUsesHeaderThenUser(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	r.Header.Set("Authorization", "Bearer client-one")
 	r.Header.Set("X-Relay-Session-ID", "conversation-one")
-	fromHeader := sessionKey(r, json.RawMessage(`"ignored-user"`))
-	if fromHeader != sessionKey(r, json.RawMessage(`"different-user"`)) {
+	fromHeader := sessionKey(r, json.RawMessage(`"ignored-user"`), nil)
+	if fromHeader != sessionKey(r, json.RawMessage(`"different-user"`), nil) {
 		t.Fatal("session header should take precedence")
 	}
 	r.Header.Del("X-Relay-Session-ID")
-	fromUser := sessionKey(r, json.RawMessage(`"conversation-one"`))
+	fromUser := sessionKey(r, json.RawMessage(`"conversation-one"`), nil)
 	if fromHeader != fromUser {
 		t.Fatal("equivalent header and user session identifiers should match")
 	}
 	r.Header.Set("Authorization", "Bearer client-two")
-	if fromUser == sessionKey(r, json.RawMessage(`"conversation-one"`)) {
+	if fromUser == sessionKey(r, json.RawMessage(`"conversation-one"`), nil) {
 		t.Fatal("sessions from different client keys must not share a route")
 	}
 }
