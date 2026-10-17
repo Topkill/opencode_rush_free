@@ -2297,7 +2297,11 @@ func (a *App) gatewayChat(w http.ResponseWriter, r *http.Request) {
 			lastErr = errors.New("proxy authentication failed")
 			continue
 		}
-		if resinMode && (resp.StatusCode == http.StatusTooManyRequests || retryableUpstreamStatus(resp.StatusCode)) {
+		resinRotate := resp.StatusCode == http.StatusTooManyRequests || retryableUpstreamStatus(resp.StatusCode)
+		if !resinRotate && resinMode && disqualifiedExitResponse(resp) {
+			resinRotate = true
+		}
+		if resinMode && resinRotate {
 			if engineConfig.DynamicScoring {
 				a.resinScores.observe(resinAccount(p.Username), resp.StatusCode, nil)
 			}
@@ -2420,6 +2424,24 @@ func readRetryResponse(resp *http.Response) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// disqualifiedExitResponse reports whether a 403 carries the OpenCode free-tier
+// or region rejection, which means this exit IP cannot serve the request and a
+// different one should be tried (the same way a 429 rotates the IP). The body
+// is buffered so it is still forwarded verbatim when the caller does not retry.
+func disqualifiedExitResponse(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusForbidden || resp.Body == nil {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(body, []byte("can only be used from within OpenCode")) ||
+		bytes.Contains(body, []byte("not available in your country"))
 }
 
 func terminalGatewayFailure(requestErr, routeErr error) (error, int, string) {

@@ -1222,6 +1222,28 @@ func TestSessionKeyDerivesStableSeedFromFirstUserMessage(t *testing.T) {
 	}
 }
 
+func TestDisqualifiedExitResponse(t *testing.T) {
+	resp := func(status int, body string) *http.Response {
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body))}
+	}
+	free := resp(http.StatusForbidden, `{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode."}}`)
+	if !disqualifiedExitResponse(free) {
+		t.Fatal("free-tier 403 not detected")
+	}
+	if restored, _ := io.ReadAll(free.Body); !strings.Contains(string(restored), "FreeTierError") {
+		t.Fatal("body was not restored after inspection")
+	}
+	if !disqualifiedExitResponse(resp(http.StatusForbidden, `{"error":{"message":"This model is not available in your country"}}`)) {
+		t.Fatal("region 403 not detected")
+	}
+	if disqualifiedExitResponse(resp(http.StatusForbidden, `{"error":"forbidden"}`)) {
+		t.Fatal("unrelated 403 treated as a disqualified exit")
+	}
+	if disqualifiedExitResponse(resp(http.StatusOK, "can only be used from within OpenCode")) {
+		t.Fatal("non-403 treated as a disqualified exit")
+	}
+}
+
 func TestProxyExpiryAndBulkDelete(t *testing.T) {
 	a := testApp(t)
 	p1, err := parseProxy("http://127.0.0.1:3128")
