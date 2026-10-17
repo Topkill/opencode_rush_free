@@ -257,7 +257,7 @@ func parseChatEnvelope(body []byte) (chatEnvelope, map[string]any, error) {
 }
 
 var defaultUpstreamHeaders = map[string]string{
-	"User-Agent":        "opencode/latest/2.0.29/cli",
+	"User-Agent":        "opencode/latest/2.0.32/cli",
 	"X-Opencode-Client": "cli",
 }
 

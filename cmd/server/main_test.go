@@ -939,7 +939,7 @@ func TestApplyUpstreamHeadersFallsBackToPublicKey(t *testing.T) {
 	if got := anonymous.Header.Get("Authorization"); got != "Bearer public" {
 		t.Fatalf("anonymous Authorization = %q, want Bearer public", got)
 	}
-	if got := anonymous.Header.Get("User-Agent"); got != "opencode/latest/2.0.29/cli" {
+	if got := anonymous.Header.Get("User-Agent"); got != "opencode/latest/2.0.32/cli" {
 		t.Fatalf("User-Agent = %q", got)
 	}
 	keyed := httptest.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
@@ -991,7 +991,7 @@ func TestCustomUpstreamHeadersReachModelsAndChat(t *testing.T) {
 		t.Fatalf("model refresh failed: %d body=%s", refresh.Code, refresh.Body.String())
 	}
 	modelHeaders := <-modelHeadersCh
-	if modelHeaders.Get("User-Agent") != "opencode/latest/2.0.29/cli" || modelHeaders.Get("X-Opencode-Client") != "cli" || modelHeaders.Get("X-Relay-Test") != "enabled" {
+	if modelHeaders.Get("User-Agent") != "opencode/latest/2.0.32/cli" || modelHeaders.Get("X-Opencode-Client") != "cli" || modelHeaders.Get("X-Relay-Test") != "enabled" {
 		t.Fatalf("custom model headers were not forwarded or identity was not authoritative: %#v", modelHeaders)
 	}
 	if modelHeaders.Get("Authorization") != "Bearer up-secret" {
@@ -1013,7 +1013,7 @@ func TestCustomUpstreamHeadersReachModelsAndChat(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	chatHeaders := <-chatHeadersCh
-	if chatHeaders.Get("User-Agent") != "opencode/latest/2.0.29/cli" || chatHeaders.Get("X-Opencode-Client") != "cli" || chatHeaders.Get("X-Relay-Test") != "enabled" {
+	if chatHeaders.Get("User-Agent") != "opencode/latest/2.0.32/cli" || chatHeaders.Get("X-Opencode-Client") != "cli" || chatHeaders.Get("X-Relay-Test") != "enabled" {
 		t.Fatalf("custom chat headers were not forwarded or identity was not authoritative: %#v", chatHeaders)
 	}
 	if chatHeaders.Get("Authorization") != "Bearer up-secret" || chatHeaders.Get("Content-Type") != "application/json" {
