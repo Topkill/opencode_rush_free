@@ -2280,12 +2280,15 @@ func (a *App) gatewayChat(w http.ResponseWriter, r *http.Request) {
 			a.clearSessionProxy(requestSessionKey, p.ID)
 			continue
 		}
+		// A 403 carrying a free-tier rejection means this exit cannot serve the
+		// request at all, so it must not be scored as a healthy proxy.
+		disqualified := disqualifiedExitResponse(resp)
 		if resinMode {
 			a.resinSuccess()
 		} else if resp.StatusCode == http.StatusProxyAuthRequired {
 			a.markProxyFailure(p.ID)
 			a.clearSessionProxy(requestSessionKey, p.ID)
-		} else if resp.StatusCode < 500 {
+		} else if resp.StatusCode < 500 && !disqualified {
 			a.markProxySuccess(p.ID)
 		}
 		if resp.StatusCode == http.StatusProxyAuthRequired && !resinMode {
@@ -2298,7 +2301,7 @@ func (a *App) gatewayChat(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		resinRotate := resp.StatusCode == http.StatusTooManyRequests || retryableUpstreamStatus(resp.StatusCode)
-		if !resinRotate && resinMode && disqualifiedExitResponse(resp) {
+		if !resinRotate && resinMode && disqualified {
 			resinRotate = true
 		}
 		if resinMode && resinRotate {
@@ -2316,9 +2319,13 @@ func (a *App) gatewayChat(w http.ResponseWriter, r *http.Request) {
 		} else if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests {
 			a.clearSessionProxy(requestSessionKey, p.ID)
 		}
-		if retryableUpstreamStatus(resp.StatusCode) && i+1 < attempts && !resinMode {
+		if (retryableUpstreamStatus(resp.StatusCode) || disqualified) && i+1 < attempts && !resinMode {
 			message := readRetryResponse(resp)
 			attemptSummary = append(attemptSummary, gatewayAttempt(i, routeEngine, p, attemptStarted, resp.StatusCode, nil, message))
+			if disqualified {
+				// Drop the sticky route so later requests do not return to this exit.
+				a.clearSessionProxy(requestSessionKey, p.ID)
+			}
 			if !waitForRetry(r.Context(), retryAfterDelay(resp, i)) {
 				downstreamErr = r.Context().Err()
 				lastErr = downstreamErr
@@ -2441,7 +2448,8 @@ func disqualifiedExitResponse(resp *http.Response) bool {
 		return false
 	}
 	return bytes.Contains(body, []byte("can only be used from within OpenCode")) ||
-		bytes.Contains(body, []byte("not available in your country"))
+		bytes.Contains(body, []byte("not available in your country")) ||
+		bytes.Contains(body, []byte("Detect Abuse Traffic"))
 }
 
 func terminalGatewayFailure(requestErr, routeErr error) (error, int, string) {

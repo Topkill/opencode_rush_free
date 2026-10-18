@@ -1236,6 +1236,13 @@ func TestDisqualifiedExitResponse(t *testing.T) {
 	if !disqualifiedExitResponse(resp(http.StatusForbidden, `{"error":{"message":"This model is not available in your country"}}`)) {
 		t.Fatal("region 403 not detected")
 	}
+	abuse := resp(http.StatusForbidden, `{"type":"error","error":{"type":"FreeTierError","message":"Forbidden, OpenCode Free Model Gateway Detect Abuse Traffic"}}`)
+	if !disqualifiedExitResponse(abuse) {
+		t.Fatal("abuse-traffic 403 not detected")
+	}
+	if restored, _ := io.ReadAll(abuse.Body); !strings.Contains(string(restored), "Detect Abuse Traffic") {
+		t.Fatal("abuse body was not restored after inspection")
+	}
 	if disqualifiedExitResponse(resp(http.StatusForbidden, `{"error":"forbidden"}`)) {
 		t.Fatal("unrelated 403 treated as a disqualified exit")
 	}
