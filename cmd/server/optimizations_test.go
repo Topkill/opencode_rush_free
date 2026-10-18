@@ -14,9 +14,12 @@ import (
 	"time"
 )
 
-func TestRetryableUpstreamStatusIncludesUnauthorized(t *testing.T) {
+func TestRetryableUpstreamStatusRotatesProxy(t *testing.T) {
 	if !retryableUpstreamStatus(http.StatusUnauthorized) {
 		t.Fatal("401 must rotate to another proxy before returning the upstream response")
+	}
+	if !retryableUpstreamStatus(http.StatusInternalServerError) {
+		t.Fatal("500 must rotate to another proxy before returning the upstream response")
 	}
 }
 
