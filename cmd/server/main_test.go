@@ -1243,6 +1243,9 @@ func TestDisqualifiedExitResponse(t *testing.T) {
 	if restored, _ := io.ReadAll(abuse.Body); !strings.Contains(string(restored), "Detect Abuse Traffic") {
 		t.Fatal("abuse body was not restored after inspection")
 	}
+	if !disqualifiedExitResponse(resp(http.StatusForbidden, `{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address."}}`)) {
+		t.Fatal("network-abuse 403 not detected")
+	}
 	if disqualifiedExitResponse(resp(http.StatusForbidden, `{"error":"forbidden"}`)) {
 		t.Fatal("unrelated 403 treated as a disqualified exit")
 	}

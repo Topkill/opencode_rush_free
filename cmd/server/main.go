@@ -2447,9 +2447,12 @@ func disqualifiedExitResponse(resp *http.Response) bool {
 	if err != nil {
 		return false
 	}
-	return bytes.Contains(body, []byte("can only be used from within OpenCode")) ||
-		bytes.Contains(body, []byte("not available in your country")) ||
-		bytes.Contains(body, []byte("Detect Abuse Traffic"))
+	// The wording changes over time ("can only be used from within OpenCode",
+	// "Detect Abuse Traffic", "detected abusive traffic from this IP address"),
+	// so match the free-tier error type rather than any one phrase. The region
+	// rejection is the one variant that carries no type.
+	return bytes.Contains(body, []byte("FreeTierError")) ||
+		bytes.Contains(body, []byte("not available in your country"))
 }
 
 func terminalGatewayFailure(requestErr, routeErr error) (error, int, string) {
